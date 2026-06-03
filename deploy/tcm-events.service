@@ -1,0 +1,16 @@
+[Unit]
+Description=TCM Events API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+# Adjust user and path to where you cloned the repo on the VPS.
+User=tcm
+WorkingDirectory=/opt/tcm_events/server
+EnvironmentFile=/opt/tcm_events/server/.env
+ExecStart=/usr/bin/node src/index.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
