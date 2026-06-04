@@ -1,10 +1,10 @@
 name: Deploy frontend to GitHub Pages
 
-# Publishes only index.html as the site. Runs automatically on pushes to main,
-# and can be triggered manually from any branch (Actions → Run workflow).
+# Publishes only index.html as the site. Runs automatically on pushes to the
+# default branch, and can be triggered manually (Actions → Run workflow).
 on:
   push:
-    branches: [main]
+    branches: [claude/dazzling-knuth-JnBad]
   workflow_dispatch:
 
 permissions:
