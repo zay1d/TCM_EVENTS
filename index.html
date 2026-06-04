@@ -1070,6 +1070,15 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
 </div>
 
 <script>
+/* ════════════════════════════════════════════════════════════════════════
+   TCM CLOUD CONFIG  ·  EDIT THIS ONE LINE AFTER DEPLOYING THE BACKEND
+   Set it to your API origin, e.g. "https://api.events.example.com".
+   Leave it empty ("") to keep the app fully standalone (file save/load).
+   ════════════════════════════════════════════════════════════════════════ */
+window.TCM_API_BASE = "";
+</script>
+
+<script>
 // ─────────────── ROLES CONFIG ───────────────
 const ROLES = {
   ceo:     { label:'CEO / Руководитель ТСМ',         color:'#c9a96e', bg:'rgba(201,169,110,0.15)' },
@@ -5442,6 +5451,398 @@ window.addEventListener('DOMContentLoaded', () => {
     if (typeof updateArchiveBadge === 'function') updateArchiveBadge();
   }
 });
+</script>
+
+<script>
+/* ============================================================================
+   TCM CLOUD LAYER  ·  multi-event · server persistence · documents · roles
+   ----------------------------------------------------------------------------
+   ADDITIVE layer. It does NOT modify the planning logic above (phase
+   schedules, checklists, templates, RACI). When window.TCM_API_BASE is empty
+   this module returns immediately and the app behaves exactly like the
+   standalone file version. Set TCM_API_BASE (see <head>) to your backend URL
+   to enable shared events, owner login and Cloudflare R2 document storage.
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var TCM_API_BASE = (window.TCM_API_BASE || localStorage.getItem('tcm_api_base') || '').replace(/\/+$/, '');
+  if (!TCM_API_BASE) return;                 // standalone mode — nothing changes.
+  localStorage.setItem('tcm_api_base', TCM_API_BASE);
+
+  // ── API client ────────────────────────────────────────────────────────────
+  var Api = {
+    base: TCM_API_BASE,
+    token: localStorage.getItem('tcm_token') || null,
+    setToken: function (t) {
+      this.token = t || null;
+      if (t) localStorage.setItem('tcm_token', t); else localStorage.removeItem('tcm_token');
+    },
+    isOwner: function () { return !!this.token; },
+    req: async function (method, path, body) {
+      var headers = {};
+      if (body !== undefined) headers['Content-Type'] = 'application/json';
+      if (this.token) headers['Authorization'] = 'Bearer ' + this.token;
+      var res = await fetch(this.base + path, {
+        method: method, headers: headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined
+      });
+      if (res.status === 401) this.setToken(null);
+      if (!res.ok) {
+        var msg;
+        try { msg = (await res.json()).error; } catch (e) { msg = res.statusText; }
+        throw new Error(msg || ('HTTP ' + res.status));
+      }
+      return res.status === 204 ? null : res.json();
+    },
+    login: function (password) {
+      var self = this;
+      return this.req('POST', '/api/auth/login', { password: password })
+        .then(function (r) { self.setToken(r.token); return r; });
+    },
+    listEvents: function () { return this.req('GET', '/api/events'); },
+    getEvent: function (id) { return this.req('GET', '/api/events/' + id); },
+    createEvent: function (d) { return this.req('POST', '/api/events', d); },
+    updateEvent: function (id, d) { return this.req('PUT', '/api/events/' + id, d); },
+    deleteEvent: function (id) { return this.req('DELETE', '/api/events/' + id); },
+    listDocs: function (eid) { return this.req('GET', '/api/events/' + eid + '/documents'); },
+    presignDoc: function (eid, meta) { return this.req('POST', '/api/events/' + eid + '/documents/presign', meta); },
+    confirmDoc: function (did) { return this.req('POST', '/api/documents/' + did + '/confirm'); },
+    deleteDoc: function (did) { return this.req('DELETE', '/api/documents/' + did); },
+    docDownloadUrl: function (did) { return this.base + '/api/documents/' + did + '/download'; }
+  };
+  window.TcmApi = Api;
+
+  var currentEventId = null;
+  var lastSavedJson = null;
+  var saving = false;
+
+  // ── State bridge (mirrors saveProject(); archive files now live in R2) ──────
+  function collectState() {
+    var state = {
+      projectName: projectName,
+      projectOwner: projectOwner,
+      currentEventType: currentEventType,
+      eventDates: {},
+      eventDurations: Object.assign({}, eventDurations),
+      eventProductionDays: Object.assign({}, eventProductionDays),
+      checked: Object.assign({}, checked),
+      annualData: annualData,
+      annualYear: annualYear
+    };
+    for (var k in eventDates) {
+      if (Object.prototype.hasOwnProperty.call(eventDates, k)) {
+        var v = eventDates[k];
+        state.eventDates[k] = v ? (v instanceof Date ? v.toISOString() : v) : null;
+      }
+    }
+    return state;
+  }
+
+  function applyState(state) {
+    if (typeof restoreState === 'function') restoreState(state || {});
+  }
+
+  // ── Server save (manual button + periodic autosave) ─────────────────────────
+  async function saveNow(force) {
+    if (!Api.isOwner() || !currentEventId) return;
+    var state = collectState();
+    var json = JSON.stringify(state);
+    if (!force && json === lastSavedJson) return;
+    if (saving) return;
+    saving = true;
+    try {
+      await Api.updateEvent(currentEventId, { name: projectName, type: currentEventType, state: state });
+      lastSavedJson = json;
+      flashSaved();
+    } catch (e) {
+      console.error('Cloud save failed:', e);
+      toast('Не удалось сохранить: ' + e.message, true);
+    } finally {
+      saving = false;
+    }
+  }
+  setInterval(function () { saveNow(false); }, 15000);
+  document.addEventListener('visibilitychange', function () { if (document.hidden) saveNow(false); });
+  window.addEventListener('beforeunload', function () { saveNow(false); });
+
+  // ── Owner-only guard for core mutation entry points (inline handlers) ───────
+  function wrapOwnerOnly() {
+    ['toggleCheck', 'annualSet', 'calSubmitForm', 'confirmEventDate', 'applyRename'].forEach(function (name) {
+      var orig = window[name];
+      if (typeof orig !== 'function' || orig.__cloudWrapped) return;
+      var wrapped = function () {
+        if (!Api.isOwner()) { toast('Режим просмотра. Войдите как владелец, чтобы редактировать.', true); return; }
+        return orig.apply(this, arguments);
+      };
+      wrapped.__cloudWrapped = true;
+      window[name] = wrapped;
+    });
+  }
+
+  // ── Documents → Cloudflare R2 (overrides archive feature in cloud mode) ──────
+  window.showArchiveScreen = function () {
+    showScreen('archive-screen');
+    document.querySelectorAll('.sb-item').forEach(function (i) { i.classList.remove('active'); });
+    var sb = document.getElementById('sb-archive'); if (sb) sb.classList.add('active');
+    if (typeof setBreadcrumb === 'function') setBreadcrumb([
+      { label: '🏠 Главная', onclick: 'goHome()' },
+      { label: '🗂 Архив мероприятия', active: true }
+    ]);
+    renderDocs();
+  };
+  window.archiveHandleFiles = function (files) { uploadDocs(files); };
+  window.archiveDrop = function (e) { e.preventDefault(); if (typeof archiveDragLeave === 'function') archiveDragLeave(e); uploadDocs(e.dataTransfer.files); };
+  window.cloudDocDownload = function (id) { window.open(Api.docDownloadUrl(id), '_blank'); };
+  window.cloudDocDelete = async function (id, name) {
+    if (!Api.isOwner()) { toast('Только владелец может удалять документы.', true); return; }
+    if (!confirm('Удалить файл «' + name + '»?')) return;
+    try { await Api.deleteDoc(id); renderDocs(); } catch (e) { toast(e.message, true); }
+  };
+
+  async function uploadDocs(files) {
+    if (!Api.isOwner()) { toast('Только владелец может загружать документы.', true); return; }
+    if (!currentEventId) { toast('Сначала откройте ивент.', true); return; }
+    for (var i = 0; i < files.length; i++) {
+      var file = files[i];
+      try {
+        var ct = file.type || 'application/octet-stream';
+        var pre = await Api.presignDoc(currentEventId, { filename: file.name, contentType: ct, size: file.size });
+        var put = await fetch(pre.uploadUrl, { method: 'PUT', headers: { 'Content-Type': ct }, body: file });
+        if (!put.ok) throw new Error('хранилище вернуло ' + put.status);
+        await Api.confirmDoc(pre.documentId);
+      } catch (e) {
+        console.error(e);
+        toast('Не удалось загрузить «' + file.name + '»: ' + e.message, true);
+      }
+    }
+    var inp = document.getElementById('archive-file-input'); if (inp) inp.value = '';
+    renderDocs();
+  }
+
+  function fmtSize(b) {
+    if (b == null) return '';
+    if (b < 1024) return b + ' Б';
+    if (b < 1048576) return (b / 1024).toFixed(0) + ' КБ';
+    return (b / 1048576).toFixed(1) + ' МБ';
+  }
+
+  async function renderDocs() {
+    var el = document.getElementById('archive-file-list');
+    if (!el) return;
+    var dz = document.getElementById('archive-dropzone');
+    if (dz) dz.style.display = Api.isOwner() ? '' : 'none';
+    el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px;">Загрузка…</div>';
+    var docs;
+    try { docs = await Api.listDocs(currentEventId); }
+    catch (e) { el.innerHTML = '<div style="text-align:center;padding:40px;color:#ef4444;font-size:13px;">Ошибка: ' + e.message + '</div>'; return; }
+    if (!docs.length) {
+      el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px;">'
+        + '<div style="font-size:40px;margin-bottom:12px;opacity:0.4;">🗂</div>Архив пуст.'
+        + (Api.isOwner() ? ' Загрузите первый документ.' : '') + '</div>';
+      return;
+    }
+    var icon = (typeof archiveFileIcon === 'function') ? archiveFileIcon : function () { return '📎'; };
+    el.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">'
+      + '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;">Документы — ' + docs.length + ' шт.</div></div>'
+      + docs.map(function (f) {
+        var date = f.created_at ? new Date(f.created_at).toLocaleDateString('ru-RU') : '';
+        var del = Api.isOwner()
+          ? '<button onclick="cloudDocDelete(\'' + f.id + '\',\'' + String(f.filename).replace(/'/g, "\\'") + '\')" style="padding:6px 12px;border-radius:8px;border:1px solid rgba(239,68,68,0.25);background:rgba(239,68,68,0.06);color:#ef4444;font-size:11px;font-weight:600;cursor:pointer;">🗑 Удалить</button>'
+          : '';
+        return '<div style="display:flex;align-items:center;gap:14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:8px;">'
+          + '<div style="font-size:28px;flex-shrink:0;">' + icon(f.content_type || '', f.filename) + '</div>'
+          + '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + f.filename + '</div>'
+          + '<div style="font-size:11px;color:var(--muted);margin-top:3px;">' + fmtSize(f.size) + (date ? ' · Добавлен ' + date : '') + '</div></div>'
+          + '<div style="display:flex;gap:8px;flex-shrink:0;">'
+          + '<button onclick="cloudDocDownload(\'' + f.id + '\')" style="padding:6px 12px;border-radius:8px;border:1px solid rgba(201,169,110,0.3);background:rgba(201,169,110,0.08);color:var(--gold);font-size:11px;font-weight:600;cursor:pointer;">⬇ Скачать</button>'
+          + del + '</div></div>';
+      }).join('');
+  }
+
+  // ── UI: styles, header controls, events overlay, role state ─────────────────
+  function injectStyles() {
+    if (document.getElementById('cloud-styles')) return;
+    var s = document.createElement('style');
+    s.id = 'cloud-styles';
+    s.textContent =
+      '.cloud-btn{display:flex;align-items:center;gap:6px;padding:6px 14px;border-radius:8px;border:1px solid var(--border2);background:var(--surface2);color:var(--muted);font-family:"Segoe UI",system-ui,sans-serif;font-size:12px;font-weight:600;cursor:pointer;transition:all .18s;}'
+      + '.cloud-btn:hover{color:var(--text);}'
+      + '.cloud-gold{border-color:rgba(201,169,110,0.4);background:rgba(201,169,110,0.1);color:var(--gold);}'
+      + '.cloud-overlay{position:fixed;inset:0;z-index:700;background:rgba(8,10,14,0.92);display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:48px 20px;}'
+      + '.cloud-card{width:100%;max-width:760px;background:var(--surface,#12151c);border:1px solid var(--border,#262b36);border-radius:16px;padding:28px;}'
+      + '.cloud-evt{display:flex;align-items:center;gap:14px;border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:10px;background:var(--surface2);transition:border-color .18s;}'
+      + '.cloud-evt:hover{border-color:var(--border2);}'
+      + '.cloud-viewer-banner{display:none;background:rgba(78,205,196,0.08);border-bottom:1px solid rgba(78,205,196,0.25);color:var(--cyan,#4ecdc4);font-size:12px;font-weight:600;text-align:center;padding:6px;}'
+      + '.cloud-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:900;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;color:#fff;box-shadow:0 8px 30px rgba(0,0,0,0.4);opacity:0;transition:opacity .2s;pointer-events:none;}';
+    document.head.appendChild(s);
+  }
+
+  function buildHeaderControls() {
+    var hr = document.querySelector('.header-right');
+    if (!hr || document.getElementById('cloud-controls')) return;
+    var wrap = document.createElement('span');
+    wrap.id = 'cloud-controls';
+    wrap.style.cssText = 'display:flex;gap:8px;align-items:center;';
+    wrap.innerHTML =
+      '<button id="cloud-list-btn" class="cloud-btn" onclick="TcmCloud.showList()">📋 Ивенты</button>'
+      + '<button id="cloud-save-btn" class="cloud-btn cloud-gold" onclick="TcmCloud.saveNow(true)">☁ Сохранить</button>'
+      + '<button id="cloud-auth-btn" class="cloud-btn" onclick="TcmCloud.auth()">Войти</button>';
+    hr.insertBefore(wrap, hr.firstChild);
+
+    var bc = document.getElementById('breadcrumb');
+    if (bc && !document.getElementById('cloud-viewer-banner')) {
+      var b = document.createElement('div');
+      b.id = 'cloud-viewer-banner';
+      b.className = 'cloud-viewer-banner';
+      b.textContent = '👁 Режим просмотра — изменения не сохраняются. Войдите как владелец для редактирования.';
+      bc.parentNode.insertBefore(b, bc);
+    }
+  }
+
+  function updateRoleUI() {
+    var owner = Api.isOwner();
+    var authBtn = document.getElementById('cloud-auth-btn');
+    if (authBtn) authBtn.textContent = owner ? 'Выйти' : 'Войти';
+    var saveBtn = document.getElementById('cloud-save-btn');
+    if (saveBtn) saveBtn.style.display = owner ? '' : 'none';
+    var banner = document.getElementById('cloud-viewer-banner');
+    if (banner) banner.style.display = owner ? 'none' : 'block';
+  }
+
+  function ensureOverlay() {
+    if (document.getElementById('cloud-overlay')) return;
+    var ov = document.createElement('div');
+    ov.id = 'cloud-overlay';
+    ov.className = 'cloud-overlay';
+    ov.innerHTML =
+      '<div class="cloud-card">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
+      + '<div style="font-size:20px;font-weight:700;color:var(--text);">Мероприятия</div>'
+      + '<div style="display:flex;gap:8px;">'
+      + '<button id="cloud-new-btn" class="cloud-btn cloud-gold" onclick="TcmCloud.createEvent()">+ Новый ивент</button>'
+      + '<button id="cloud-ov-auth" class="cloud-btn" onclick="TcmCloud.auth()">Войти</button>'
+      + '</div></div>'
+      + '<div style="font-size:12px;color:var(--muted);margin-bottom:20px;">Выберите мероприятие для просмотра. Редактировать может только владелец.</div>'
+      + '<div id="cloud-list-body"></div>'
+      + '</div>';
+    document.body.appendChild(ov);
+  }
+
+  async function showList() {
+    ensureOverlay();
+    var owner = Api.isOwner();
+    var nb = document.getElementById('cloud-new-btn'); if (nb) nb.style.display = owner ? '' : 'none';
+    var ob = document.getElementById('cloud-ov-auth'); if (ob) ob.textContent = owner ? 'Выйти' : 'Войти';
+    document.getElementById('cloud-overlay').style.display = 'flex';
+    var body = document.getElementById('cloud-list-body');
+    body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted);">Загрузка…</div>';
+    var events;
+    try { events = await Api.listEvents(); }
+    catch (e) { body.innerHTML = '<div style="text-align:center;padding:30px;color:#ef4444;">Ошибка: ' + e.message + '</div>'; return; }
+    if (!events.length) {
+      body.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted);"><div style="font-size:40px;opacity:0.4;margin-bottom:10px;">📭</div>Пока нет ни одного мероприятия.'
+        + (owner ? ' Создайте первое.' : '') + '</div>';
+      return;
+    }
+    body.innerHTML = events.map(function (ev) {
+      var date = ev.event_date ? new Date(ev.event_date).toLocaleDateString('ru-RU') : (ev.updated_at ? 'изм. ' + new Date(ev.updated_at).toLocaleDateString('ru-RU') : '');
+      var del = owner ? '<button class="cloud-btn" style="border-color:rgba(239,68,68,0.25);color:#ef4444;" onclick="event.stopPropagation();TcmCloud.deleteEvent(\'' + ev.id + '\',\'' + String(ev.name).replace(/'/g, "\\'") + '\')">🗑</button>' : '';
+      return '<div class="cloud-evt">'
+        + '<div style="font-size:24px;">📅</div>'
+        + '<div style="flex:1;min-width:0;cursor:pointer;" onclick="TcmCloud.openEvent(\'' + ev.id + '\')">'
+        + '<div style="font-size:14px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + ev.name + '</div>'
+        + '<div style="font-size:11px;color:var(--muted);margin-top:3px;">' + (date || '') + (ev.type ? ' · ' + ev.type : '') + '</div></div>'
+        + '<button class="cloud-btn cloud-gold" onclick="TcmCloud.openEvent(\'' + ev.id + '\')">Открыть →</button>'
+        + del + '</div>';
+    }).join('');
+  }
+
+  async function openEvent(id) {
+    var ev;
+    try { ev = await Api.getEvent(id); } catch (e) { toast(e.message, true); return; }
+    currentEventId = id;
+    applyState(ev.state || {});
+    lastSavedJson = JSON.stringify(collectState());
+    document.getElementById('cloud-overlay').style.display = 'none';
+    updateRoleUI();
+  }
+
+  async function createEvent() {
+    if (!Api.isOwner()) { toast('Войдите как владелец, чтобы создавать ивенты.', true); return; }
+    var name = prompt('Название мероприятия:');
+    if (name == null) return;
+    name = name.trim() || 'Новое мероприятие';
+    var ev;
+    try { ev = await Api.createEvent({ name: name, state: { projectName: name } }); }
+    catch (e) { toast(e.message, true); return; }
+    openEvent(ev.id);
+  }
+
+  async function deleteEvent(id, name) {
+    if (!Api.isOwner()) return;
+    if (!confirm('Удалить мероприятие «' + name + '» и все его документы?')) return;
+    try { await Api.deleteEvent(id); }
+    catch (e) { toast(e.message, true); return; }
+    if (currentEventId === id) currentEventId = null;
+    showList();
+  }
+
+  async function auth() {
+    if (Api.isOwner()) {
+      Api.setToken(null); updateRoleUI();
+      var ob = document.getElementById('cloud-ov-auth'); if (ob) ob.textContent = 'Войти';
+      var nb = document.getElementById('cloud-new-btn'); if (nb) nb.style.display = 'none';
+      toast('Вы вышли из режима редактирования');
+      if (document.getElementById('archive-screen') && document.getElementById('archive-screen').classList.contains('active')) renderDocs();
+      return;
+    }
+    var pw = prompt('Пароль владельца:');
+    if (pw == null) return;
+    try {
+      await Api.login(pw);
+      updateRoleUI();
+      var ob2 = document.getElementById('cloud-ov-auth'); if (ob2) ob2.textContent = 'Выйти';
+      var nb2 = document.getElementById('cloud-new-btn'); if (nb2) nb2.style.display = '';
+      toast('Вход выполнен — режим редактирования');
+    } catch (e) { toast('Неверный пароль', true); }
+  }
+
+  // ── Small UI helpers ────────────────────────────────────────────────────────
+  function toast(msg, isError) {
+    var t = document.createElement('div');
+    t.className = 'cloud-toast';
+    t.style.background = isError ? '#b91c1c' : '#15803d';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    requestAnimationFrame(function () { t.style.opacity = '1'; });
+    setTimeout(function () { t.style.opacity = '0'; setTimeout(function () { t.remove(); }, 250); }, 2600);
+  }
+  function flashSaved() {
+    var btn = document.getElementById('cloud-save-btn');
+    if (!btn) return;
+    var orig = btn.innerHTML;
+    btn.innerHTML = '✓ Сохранено';
+    setTimeout(function () { btn.innerHTML = orig; }, 1500);
+  }
+
+  // ── Public surface for inline handlers ──────────────────────────────────────
+  window.TcmCloud = {
+    showList: showList, openEvent: openEvent, createEvent: createEvent,
+    deleteEvent: deleteEvent, saveNow: saveNow, auth: auth
+  };
+
+  // ── Boot (runs after the core DOMContentLoaded handler) ─────────────────────
+  window.addEventListener('DOMContentLoaded', function () {
+    injectStyles();
+    buildHeaderControls();
+    wrapOwnerOnly();
+    updateRoleUI();
+    var sm = document.getElementById('startup-modal'); if (sm) sm.style.display = 'none';
+    showList();
+  });
+})();
 </script>
 </body>
 </html>
