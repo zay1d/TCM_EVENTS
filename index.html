@@ -5563,9 +5563,16 @@ window.addEventListener('DOMContentLoaded', () => {
       saving = false;
     }
   }
-  setInterval(function () { saveNow(false); }, 15000);
-  document.addEventListener('visibilitychange', function () { if (document.hidden) saveNow(false); });
-  window.addEventListener('beforeunload', function () { saveNow(false); });
+  // No autosave: changes are persisted ONLY when the owner clicks "☁ Сохранить".
+  // If the page is left without saving, the changes are simply discarded.
+  // We only warn (native browser dialog) when there are unsaved changes — this
+  // does NOT save anything.
+  window.addEventListener('beforeunload', function (e) {
+    if (Api.isOwner() && currentEventId && JSON.stringify(collectState()) !== lastSavedJson) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
 
   // ── Owner-only guard for core mutation entry points (inline handlers) ───────
   function wrapOwnerOnly() {
