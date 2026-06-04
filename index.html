@@ -5516,6 +5516,7 @@ window.addEventListener('DOMContentLoaded', () => {
   var currentEventId = null;
   var lastSavedJson = null;
   var saving = false;
+  var creatingNewEvent = false;   // true while the startup modal is used to create a server event
 
   // ── State bridge (mirrors saveProject(); archive files now live in R2) ──────
   function collectState() {
@@ -5769,16 +5770,39 @@ window.addEventListener('DOMContentLoaded', () => {
     updateRoleUI();
   }
 
-  async function createEvent() {
+  // Create a new event using the ORIGINAL "Новое мероприятие" startup modal
+  // (same look & feel as the standalone app), then persist it to the server.
+  function createEvent() {
     if (!Api.isOwner()) { toast('Войдите как владелец, чтобы создавать ивенты.', true); return; }
-    var name = prompt('Название мероприятия:');
-    if (name == null) return;
-    name = name.trim() || 'Новое мероприятие';
-    var ev;
-    try { ev = await Api.createEvent({ name: name, state: { projectName: name } }); }
-    catch (e) { toast(e.message, true); return; }
-    openEvent(ev.id);
+    creatingNewEvent = true;
+    var nameI = document.getElementById('startup-name-input');
+    var ownerI = document.getElementById('startup-owner-input');
+    if (nameI) nameI.value = '';
+    if (ownerI) ownerI.value = '';
+    var ov = document.getElementById('cloud-overlay'); if (ov) ov.style.display = 'none';
+    var sm = document.getElementById('startup-modal'); if (sm) sm.style.display = 'flex';
+    if (nameI) setTimeout(function () { nameI.focus(); }, 50);
   }
+
+  // The startup modal's buttons call confirmStartup(). In cloud "new event"
+  // mode we create the event on the server instead of just setting a local name.
+  var _coreConfirmStartup = window.confirmStartup;
+  window.confirmStartup = async function () {
+    if (!creatingNewEvent) {
+      if (typeof _coreConfirmStartup === 'function') return _coreConfirmStartup.apply(this, arguments);
+      return;
+    }
+    creatingNewEvent = false;
+    var nameI = document.getElementById('startup-name-input');
+    var ownerI = document.getElementById('startup-owner-input');
+    var name = (nameI && nameI.value.trim()) || 'Новое мероприятие';
+    var owner = (ownerI && ownerI.value.trim()) || '';
+    var sm = document.getElementById('startup-modal'); if (sm) sm.style.display = 'none';
+    var ev;
+    try { ev = await Api.createEvent({ name: name, state: { projectName: name, projectOwner: owner } }); }
+    catch (e) { toast(e.message, true); showList(); return; }
+    openEvent(ev.id);
+  };
 
   async function deleteEvent(id, name) {
     if (!Api.isOwner()) return;
@@ -5789,24 +5813,76 @@ window.addEventListener('DOMContentLoaded', () => {
     showList();
   }
 
-  async function auth() {
+  function auth() {
     if (Api.isOwner()) {
-      Api.setToken(null); updateRoleUI();
-      var ob = document.getElementById('cloud-ov-auth'); if (ob) ob.textContent = 'Войти';
-      var nb = document.getElementById('cloud-new-btn'); if (nb) nb.style.display = 'none';
+      Api.setToken(null);
+      refreshAfterRole();
       toast('Вы вышли из режима редактирования');
-      if (document.getElementById('archive-screen') && document.getElementById('archive-screen').classList.contains('active')) renderDocs();
       return;
     }
-    var pw = prompt('Пароль владельца:');
-    if (pw == null) return;
+    openLogin();
+  }
+
+  // Re-sync all role-dependent UI after login/logout.
+  function refreshAfterRole() {
+    updateRoleUI();
+    var ov = document.getElementById('cloud-overlay');
+    if (ov && ov.style.display !== 'none') showList();              // refresh list controls
+    var arch = document.getElementById('archive-screen');
+    if (arch && arch.classList.contains('active')) renderDocs();    // refresh document controls
+  }
+
+  // ── In-page login modal (replaces the browser prompt) ───────────────────────
+  function ensureLoginModal() {
+    if (document.getElementById('cloud-login-modal')) return;
+    var m = document.createElement('div');
+    m.id = 'cloud-login-modal';
+    m.className = 'modal-overlay';
+    m.style.cssText = 'display:none;z-index:800;';
+    m.innerHTML =
+      '<div class="modal" style="max-width:380px;">'
+      + '<div style="text-align:center;margin-bottom:20px;">'
+      + '<div style="font-size:30px;margin-bottom:10px;">🔐</div>'
+      + '<div style="font-size:16px;font-weight:700;margin-bottom:6px;">Вход для редактирования</div>'
+      + '<div style="font-size:12px;color:var(--muted);line-height:1.6;">Введите пароль владельца. Без входа доступен только просмотр.</div>'
+      + '</div>'
+      + '<input id="cloud-login-pw" type="password" placeholder="Пароль" '
+      + 'style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;padding:12px 16px;font-size:15px;color:var(--text);outline:none;" '
+      + 'onkeydown="if(event.key===\'Enter\')TcmCloud.submitLogin()" />'
+      + '<div id="cloud-login-err" style="display:none;color:#ef4444;font-size:12px;margin-top:8px;"></div>'
+      + '<div style="display:flex;gap:10px;margin-top:20px;">'
+      + '<button class="btn btn-ghost" style="flex:1;" onclick="TcmCloud.closeLogin()">Отмена</button>'
+      + '<button class="btn btn-primary" style="flex:2;" onclick="TcmCloud.submitLogin()">Войти →</button>'
+      + '</div></div>';
+    document.body.appendChild(m);
+  }
+
+  function openLogin() {
+    ensureLoginModal();
+    var pw = document.getElementById('cloud-login-pw');
+    var err = document.getElementById('cloud-login-err');
+    if (pw) pw.value = '';
+    if (err) err.style.display = 'none';
+    document.getElementById('cloud-login-modal').style.display = 'flex';
+    if (pw) setTimeout(function () { pw.focus(); }, 50);
+  }
+
+  function closeLogin() {
+    var m = document.getElementById('cloud-login-modal');
+    if (m) m.style.display = 'none';
+  }
+
+  async function submitLogin() {
+    var pw = document.getElementById('cloud-login-pw');
+    var err = document.getElementById('cloud-login-err');
     try {
-      await Api.login(pw);
-      updateRoleUI();
-      var ob2 = document.getElementById('cloud-ov-auth'); if (ob2) ob2.textContent = 'Выйти';
-      var nb2 = document.getElementById('cloud-new-btn'); if (nb2) nb2.style.display = '';
+      await Api.login(pw ? pw.value : '');
+      closeLogin();
+      refreshAfterRole();
       toast('Вход выполнен — режим редактирования');
-    } catch (e) { toast('Неверный пароль', true); }
+    } catch (e) {
+      if (err) { err.textContent = 'Неверный пароль'; err.style.display = 'block'; }
+    }
   }
 
   // ── Small UI helpers ────────────────────────────────────────────────────────
@@ -5830,17 +5906,22 @@ window.addEventListener('DOMContentLoaded', () => {
   // ── Public surface for inline handlers ──────────────────────────────────────
   window.TcmCloud = {
     showList: showList, openEvent: openEvent, createEvent: createEvent,
-    deleteEvent: deleteEvent, saveNow: saveNow, auth: auth
+    deleteEvent: deleteEvent, saveNow: saveNow, auth: auth,
+    submitLogin: submitLogin, closeLogin: closeLogin
   };
 
   // ── Boot (runs after the core DOMContentLoaded handler) ─────────────────────
   window.addEventListener('DOMContentLoaded', function () {
-    injectStyles();
-    buildHeaderControls();
-    wrapOwnerOnly();
-    updateRoleUI();
+    // Hide the standalone startup modal FIRST — in cloud mode the events list is
+    // the entry point. Doing this before anything that could throw guarantees the
+    // "Новое мероприятие" modal never stays stuck on screen.
     var sm = document.getElementById('startup-modal'); if (sm) sm.style.display = 'none';
-    showList();
+    var step = function (label, fn) { try { fn(); } catch (e) { console.error('TCM cloud boot: ' + label, e); } };
+    step('styles', injectStyles);
+    step('header', buildHeaderControls);
+    step('guards', wrapOwnerOnly);
+    step('role', updateRoleUI);
+    step('list', showList);
   });
 })();
 </script>
