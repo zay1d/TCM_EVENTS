@@ -5687,8 +5687,7 @@ window.addEventListener('DOMContentLoaded', () => {
     wrap.id = 'cloud-controls';
     wrap.style.cssText = 'display:flex;gap:8px;align-items:center;';
     wrap.innerHTML =
-      '<button id="cloud-list-btn" class="cloud-btn" onclick="TcmCloud.showList()">📋 Ивенты</button>'
-      + '<button id="cloud-save-btn" class="cloud-btn cloud-gold" onclick="TcmCloud.saveNow(true)">☁ Сохранить</button>'
+      '<button id="cloud-save-btn" class="cloud-btn cloud-gold" onclick="TcmCloud.saveNow(true)">☁ Сохранить</button>'
       + '<button id="cloud-auth-btn" class="cloud-btn" onclick="TcmCloud.auth()">Войти</button>';
     hr.insertBefore(wrap, hr.firstChild);
 
@@ -5766,7 +5765,7 @@ window.addEventListener('DOMContentLoaded', () => {
     currentEventId = id;
     applyState(ev.state || {});
     lastSavedJson = JSON.stringify(collectState());
-    document.getElementById('cloud-overlay').style.display = 'none';
+    var sm = document.getElementById('startup-modal'); if (sm) sm.style.display = 'none';
     updateRoleUI();
   }
 
@@ -5826,10 +5825,9 @@ window.addEventListener('DOMContentLoaded', () => {
   // Re-sync all role-dependent UI after login/logout.
   function refreshAfterRole() {
     updateRoleUI();
-    var ov = document.getElementById('cloud-overlay');
-    if (ov && ov.style.display !== 'none') showList();              // refresh list controls
     var arch = document.getElementById('archive-screen');
     if (arch && arch.classList.contains('active')) renderDocs();    // refresh document controls
+    if (!currentEventId) bootWorkspace();                           // re-decide entry now the role changed
   }
 
   // ── In-page login modal (replaces the browser prompt) ───────────────────────
@@ -5910,18 +5908,38 @@ window.addEventListener('DOMContentLoaded', () => {
     submitLogin: submitLogin, closeLogin: closeLogin
   };
 
+  // Single shared workspace: load the existing event, or show the ORIGINAL
+  // startup modal to create it (owner). This makes the first screen identical
+  // to the standalone app — the only difference is the added roles.
+  async function bootWorkspace() {
+    var sm = document.getElementById('startup-modal');
+    if (sm) sm.style.display = 'none';            // avoid flashing it while we check the server
+    var events;
+    try { events = await Api.listEvents(); }
+    catch (e) {
+      toast('Сервер недоступен: ' + e.message, true);
+      if (sm) sm.style.display = 'flex';
+      return;
+    }
+    if (events && events.length) {
+      await openEvent(events[0].id);              // load the shared workspace
+    } else if (sm) {
+      creatingNewEvent = Api.isOwner();           // owner's "Начать работу" creates it on the server
+      sm.style.display = 'flex';
+      var nameI = document.getElementById('startup-name-input');
+      if (nameI) setTimeout(function () { nameI.focus(); }, 100);
+    }
+  }
+
   // ── Boot (runs after the core DOMContentLoaded handler) ─────────────────────
   window.addEventListener('DOMContentLoaded', function () {
-    // Hide the standalone startup modal FIRST — in cloud mode the events list is
-    // the entry point. Doing this before anything that could throw guarantees the
-    // "Новое мероприятие" modal never stays stuck on screen.
     var sm = document.getElementById('startup-modal'); if (sm) sm.style.display = 'none';
     var step = function (label, fn) { try { fn(); } catch (e) { console.error('TCM cloud boot: ' + label, e); } };
     step('styles', injectStyles);
     step('header', buildHeaderControls);
     step('guards', wrapOwnerOnly);
     step('role', updateRoleUI);
-    step('list', showList);
+    step('workspace', bootWorkspace);
   });
 })();
 </script>
