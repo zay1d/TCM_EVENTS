@@ -33,4 +33,7 @@ app.use((err, _req, res, _next) => {
 });
 
 const port = process.env.PORT || 8080;
-app.listen(port, () => console.log(`API listening on :${port}`));
+// Bind to loopback only — the API is never exposed publicly; nginx fronts it
+// with TLS. Override with HOST=0.0.0.0 if running without a reverse proxy.
+const host = process.env.HOST || '127.0.0.1';
+app.listen(port, host, () => console.log(`API listening on ${host}:${port}`));
