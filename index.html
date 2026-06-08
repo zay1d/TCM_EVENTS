@@ -951,6 +951,18 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
       <div class="modal-title" style="text-align:center;font-size:17px;color:var(--gold)" id="date-modal-title">Выберите дату начала мероприятия</div>
     </div>
 
+    <!-- Project start date (for already-running projects) -->
+    <div id="project-start-block" style="display:none;background:var(--surface2);border:1px solid var(--border2);border-radius:12px;padding:12px 16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:2px">🚀 Дата начала проекта</div>
+          <div style="font-family:'Segoe UI','Trebuchet MS',system-ui,sans-serif;font-size:12px;font-weight:700;color:var(--text)">от неё строится график</div>
+        </div>
+        <input id="project-start-input" type="date" onchange="calSetProjectStart()" style="font-family:'Segoe UI','Trebuchet MS',system-ui,sans-serif;font-size:13px;font-weight:700;color:var(--gold);background:var(--surface3);border:1px solid var(--border2);border-radius:8px;padding:7px 10px;color-scheme:dark;">
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.4">Оставьте пустым — расчёт пойдёт от сегодня. Укажите дату, если проект уже идёт.</div>
+    </div>
+
     <!-- Custom Calendar -->
     <div style="background:var(--surface2);border:1px solid var(--border2);border-radius:12px;padding:16px;margin-bottom:16px;">
       <!-- Month nav -->
@@ -1703,14 +1715,14 @@ const EVENT_TYPES = {
           { text:'Макеты согласованы с Директором маркетинга', taskId:'3.7', after:['3.6'], days:1, parallel:false, critical:true },
           { text:'Замечания по макетам отработаны с подрядчиком', taskId:'3.8', after:['3.7'], days:2, parallel:false, critical:true },
           { text:'Производство запущено (точка невозврата)', taskId:'3.9', after:['3.8'], days:1, parallel:false, critical:true, isProduction:true },
-          { text:'Срединный контроль качества (визит / фото-отчёт)', taskId:'3.10', after:['3.9'], days:1, parallel:false, critical:true, isProduction:true },
+          { text:'Контроль качества производства (сопровождение, визиты, фото-отчёты)', taskId:'3.10', after:['3.9'], days:1, parallel:true, critical:true, isProduction:true },
           { text:'Готовая продукция принята у подрядчика', taskId:'3.11', after:['3.10'], days:1, parallel:false, critical:false, isProduction:true },
           { text:'Доставка на площадку завершена', taskId:'3.12', after:['3.11'], days:1, parallel:false, critical:false, isProduction:true },
           { text:'Гарантийные письма от подрядчиков собраны (матответственность, соблюдение правил ТЦ)', taskId:'3.13', after:['3.11'], days:3, parallel:true, critical:false },
-          { text:'Техническая заявка на мощности (электричество, вода) в Службу эксплуатации подана', taskId:'3.14', after:['3.10'], days:2, parallel:true, critical:true },
-          { text:'Заявки в Службу безопасности поданы', taskId:'3.15', after:['3.10'], days:1, parallel:true, critical:false, template:'services_checklist' },
-          { text:'Согласование со Службой безопасности получено (списки, охрана, пропуска)', taskId:'3.16', after:['3.15'], days:3, parallel:false, critical:false },
-          { text:'Оценка пожарного риска проведена (бумажная)', taskId:'3.17', after:['3.14'], days:5, parallel:true, critical:true },
+          { text:'Техническая заявка на мощности (электричество, вода) в Службу эксплуатации подана', taskId:'3.14', after:['3.9'], days:2, parallel:true, critical:true },
+          { text:'Заявки в Службу безопасности поданы', taskId:'3.15', after:['3.9'], days:1, parallel:true, critical:false, template:'services_checklist' },
+          { text:'Согласование со Службой безопасности получено (списки, охрана, пропуска)', taskId:'3.16', after:['3.15','3.11'], days:3, parallel:false, critical:false },
+          { text:'Оценка пожарного риска проведена (бумажная)', taskId:'3.17', after:['3.14','3.11'], days:5, parallel:true, critical:true },
           { text:'План управления в случае ЧС составлен и согласован с СБ', taskId:'3.18', after:['3.16'], days:2, parallel:true, critical:false },
           { text:'Согласование по пожарной безопасности получено', taskId:'3.19', after:['3.17','3.18'], days:2, parallel:true, critical:true },
           { text:'Согласование по ОТ/ТБ получено', taskId:'3.20', after:['3.16'], days:1, parallel:true, critical:false },
@@ -1871,6 +1883,7 @@ let currentModalTemplate = null;
 let eventDates = {}; // { 'special': Date, 'operational': Date } — start date
 let eventDurations = {}; // { 'special': N, 'operational': N } — days inclusive (event runs days 1..N)
 let eventProductionDays = {}; // { 'special': N, 'operational': N } — workdays needed for vendor production
+let projectStartDates = {}; // { 'special': Date, 'operational': Date } — actual project start (for already-running projects). If unset, falls back to today+buffer.
 
 // Default production timeline (workdays) — used if user hasn't set a custom value.
 const DEFAULT_PRODUCTION_DAYS = 12;
@@ -2024,16 +2037,24 @@ function renderMilestones(typeId, eventDate) {
     const ref = findCheckByTaskId(typeId, m.taskId);
     let dateStr = '—', dateObj = null;
     if (ref) {
-      const eff = getEffectiveTaskTiming(ref.task, eventDate);
-      if (ref.task.wdAfter !== undefined) {
-        // Anchor to event END (multi-day events)
-        const dur = eventDurations[typeId] || 1;
-        const evEnd = new Date(eventDate); if (dur > 1) evEnd.setDate(evEnd.getDate() + dur - 1);
-        dateObj = addWorkdays(evEnd, ref.task.wdAfter);
-      } else if (ref.task.isEventRun) {
-        dateObj = new Date(eventDate);
+      // Use the SAME forward topological schedule as Gantt/Roadmap so all three
+      // views agree. A milestone is reached when its anchor task COMPLETES, so we
+      // take the task's end date.
+      const range = getTaskDateRange(ref.task, ref.phase.id, eventDate);
+      if (range && range.end) {
+        dateObj = range.end;
       } else {
-        dateObj = subtractWorkdays(eventDate, eff.wdBefore);
+        // Fallback to the old back-from-event calc if schedule unavailable
+        const eff = getEffectiveTaskTiming(ref.task, eventDate);
+        if (ref.task.wdAfter !== undefined) {
+          const dur = eventDurations[typeId] || 1;
+          const evEnd = new Date(eventDate); if (dur > 1) evEnd.setDate(evEnd.getDate() + dur - 1);
+          dateObj = addWorkdays(evEnd, ref.task.wdAfter);
+        } else if (ref.task.isEventRun) {
+          dateObj = new Date(eventDate);
+        } else {
+          dateObj = subtractWorkdays(eventDate, eff.wdBefore);
+        }
       }
       dateStr = formatDateShort(dateObj);
     }
@@ -2182,13 +2203,14 @@ function _computeSchedule(typeId, k) {
   function effDays(t) {
     if (t.isEventRun) return evtDur;
     if (t.isProduction) {
-      // 3.10 (mid) keeps 1 rd nominally; the BIG production gap is sitting between 3.9 and 3.10 (start-to-mid is prodDays/2)
-      // BUT we modeled the production track as 4 distinct one-day tasks (3.9 start, 3.10 mid, 3.11 ready, 3.12 delivered)
-      // with prodDays of actual production sitting BETWEEN 3.9 (start) and 3.11 (ready).
-      // For simplicity: 3.9 takes 1 day. 3.10 (mid) takes prodDays/2 days. 3.11 (ready) takes prodDays/2 days (rest). 3.12 takes 1 day.
-      // This way total = 1 + half + half + 1 = prodDays + 2 ; close enough.
-      if (t.taskId === '3.10') return Math.max(1, Math.floor(prodDays / 2));
-      if (t.taskId === '3.11') return Math.max(1, Math.ceil(prodDays / 2));
+      // Production track model:
+      //   3.9  Производство запущено      — 1 day (launch point)
+      //   3.10 Контроль качества          — spans the ENTIRE production period (prodDays),
+      //                                      running in parallel with production
+      //   3.11 Готовая продукция принята  — 1 day acceptance, AFTER production finishes (after 3.10)
+      //   3.12 Доставка завершена         — 1 day
+      // So the prodDays sit inside task 3.10, which overlaps the whole production window.
+      if (t.taskId === '3.10') return Math.max(1, prodDays);
       return 1;
     }
     if (t.wdAfter !== undefined) return t.days || 1;  // closure tasks: literal
@@ -2248,11 +2270,17 @@ function getEffectiveSchedule(typeId, eventDate) {
     const sch = _computeSchedule(typeId, 1);
     return { ...sch, k: 1, mode: 'literal', projectStart: null };
   }
-  const cacheKey = typeId + '|' + eventDate.getTime() + '|' + (eventDurations[typeId]||1) + '|' + (eventProductionDays[typeId]||DEFAULT_PRODUCTION_DAYS);
+  const customStart = projectStartDates[typeId] ? new Date(projectStartDates[typeId]) : null;
+  if (customStart) customStart.setHours(0,0,0,0);
+  const cacheKey = typeId + '|' + eventDate.getTime() + '|' + (eventDurations[typeId]||1) + '|' + (eventProductionDays[typeId]||DEFAULT_PRODUCTION_DAYS) + '|' + (customStart ? customStart.getTime() : 'auto');
   if (_scheduleCacheKey === cacheKey && _scheduleCache) return _scheduleCache;
 
   const today = new Date(); today.setHours(0,0,0,0);
-  const wdAvailable = countWorkdaysBetween(today, eventDate) - BUFFER_WORKDAYS;
+  // Project anchor: explicit start date (for already-running projects) or today+buffer.
+  const anchor = customStart || _addWorkdays(today, BUFFER_WORKDAYS);
+  const wdAvailable = customStart
+    ? countWorkdaysBetween(customStart, eventDate)
+    : countWorkdaysBetween(today, eventDate) - BUFFER_WORKDAYS;
   // We need: schedule with k such that 4.8 (event-run) startWd === wdAvailable
   // 4.8 endWd = wdAvailable + (evtDur - 1)
   // Try binary search on k in [0.1, 5]
@@ -2275,7 +2303,7 @@ function getEffectiveSchedule(typeId, eventDate) {
   if (bestK < 0.97) mode = 'compressed';
   else if (bestK > 1.03) mode = 'stretched';
 
-  const projectStart = _addWorkdays(today, BUFFER_WORKDAYS);
+  const projectStart = anchor;
   const out = { ...finalSch, k: bestK, mode, projectStart };
   _scheduleCacheKey = cacheKey;
   _scheduleCache = out;
@@ -2376,17 +2404,36 @@ function getEffectiveRange(typeId, phaseId, eventDate) {
   const base = typeId === 'special' ? BASE_TIMELINES_SPECIAL : BASE_TIMELINES_OPERATIONAL;
   if (!eventDate) return base[phaseId] || null;
 
+  // Derive each phase's range from the SAME forward topological schedule used by
+  // the Gantt chart, so Roadmap / Gantt / milestones all agree. We take the min
+  // start and max end of the phase's tasks, expressed as calendar-day offsets
+  // from the event date (negative = before event), matching the {from,to} format.
+  try {
+    const et = (typeof EVENT_TYPES !== 'undefined') ? EVENT_TYPES[typeId] : null;
+    const phase = et && et.phases ? et.phases.find(p => p.id === phaseId) : null;
+    if (phase && phase.checks && phase.checks.length) {
+      let earliest = null, latest = null;
+      for (let i = 0; i < phase.checks.length; i++) {
+        const range = getTaskDateRange(phase.checks[i], phaseId, eventDate);
+        if (!range) continue;
+        if (earliest === null || range.start < earliest) earliest = range.start;
+        if (latest === null || range.end > latest) latest = range.end;
+      }
+      if (earliest && latest) {
+        const from = Math.round((earliest - eventDate) / 86400000);
+        const to   = Math.round((latest   - eventDate) / 86400000);
+        return { from, to };
+      }
+    }
+  } catch (e) { /* fall through to proportional/base below */ }
+
+  // Fallback (e.g. schedule not ready): proportional fit, then base timelines
   const today = new Date(); today.setHours(0,0,0,0);
   const daysUntil = Math.round((eventDate - today) / 86400000);
   const maxDaysForType = typeId === 'special' ? 148 : 60;
-
-  // If we have enough time — use BASE timelines literally (no compression)
   if (daysUntil >= maxDaysForType) return base[phaseId] || null;
-
-  // Otherwise scale proportionally to fit available time
   const ranges = computePhaseRanges(typeId, daysUntil);
   if (ranges && ranges[phaseId]) return ranges[phaseId];
-
   return base[phaseId] || null;
 }
 
@@ -2617,12 +2664,33 @@ function showDateModal(typeId) {
   const prodInput = document.getElementById('prod-days-input');
   if (prodInput) prodInput.value = calProdDays;
 
+  // Project start date (for already-running projects) — special only
+  calProjectStart = projectStartDates[typeId] ? new Date(projectStartDates[typeId]) : null;
+  const psBlock = document.getElementById('project-start-block');
+  const psInput = document.getElementById('project-start-input');
+  if (psBlock) psBlock.style.display = (typeId === 'special') ? 'block' : 'none';
+  if (psInput) psInput.value = calProjectStart ? _toISODate(calProjectStart) : '';
+
   document.getElementById('date-modal-overlay').dataset.type = typeId;
   document.getElementById('date-modal-overlay').style.display = 'flex';
   renderCal();
 }
 
 let calProdDays = 12;
+let calProjectStart = null;
+function _toISODate(d) {
+  const y = d.getFullYear(); const m = String(d.getMonth()+1).padStart(2,'0'); const day = String(d.getDate()).padStart(2,'0');
+  return y + '-' + m + '-' + day;
+}
+function calSetProjectStart() {
+  const psInput = document.getElementById('project-start-input');
+  if (!psInput) return;
+  const v = psInput.value;
+  if (!v) { calProjectStart = null; return; }
+  const parts = v.split('-');
+  calProjectStart = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+  calProjectStart.setHours(0,0,0,0);
+}
 function calChangeProd(delta) {
   calProdDays = Math.max(1, Math.min(365, calProdDays + delta));
   document.getElementById('prod-days-input').value = calProdDays;
@@ -2836,6 +2904,8 @@ function confirmEventDate() {
     eventDurations[calTypeId] = Math.round((calEndDate - calStartDate) / 86400000) + 1;
     if (calTypeId === 'special') {
       eventProductionDays[calTypeId] = calProdDays;
+      if (calProjectStart) projectStartDates[calTypeId] = new Date(calProjectStart);
+      else delete projectStartDates[calTypeId];
     }
     if (typeof invalidateSchedule === 'function') invalidateSchedule();
   }
@@ -2974,23 +3044,6 @@ function renderEventScreen(typeId) {
       banner.id = 'compress-banner';
       banner.style.cssText = 'background:rgba(78,205,196,0.06);border:1px solid rgba(78,205,196,0.22);border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:rgba(238,238,244,0.85);line-height:1.6;display:flex;gap:10px;align-items:flex-start;';
       banner.innerHTML = `<span style="font-size:18px;flex-shrink:0">⏳</span><div><strong style="color:var(--cyan);">Расширенный режим подготовки.</strong> До мероприятия ${availWd} рабочих дней — на ${extra} больше стандартных ${SPECIAL_PROJECT_WORKDAYS}. Инициация и Планирование растянуты на доп. ${extra} дн. для глубокой проработки концепции, согласований и подбора подрядчиков. Подготовка и далее — по стандартным срокам, чтобы цены и контракты были актуальные.</div>`;
-      const cardsEl = document.getElementById('event-phase-cards');
-      cardsEl.parentNode.insertBefore(banner, cardsEl);
-    }
-  }
-
-  // Production conflict banner — start of production falls before standard prep phase
-  if (typeId === 'special' && eventDate) {
-    const prodDays = eventProductionDays[typeId] || DEFAULT_PRODUCTION_DAYS;
-    const productionStart = prodDays + 5; // wdBefore at which production must launch (delivered=4, ready=5, +prodDays)
-    const PREP_PHASE_START = 31; // first task of preparation phase
-    if (productionStart > PREP_PHASE_START) {
-      const overshoot = productionStart - PREP_PHASE_START;
-      const overshootPhase = productionStart > 76 ? 'Инициации' : 'Планирования';
-      const banner = document.createElement('div');
-      banner.id = 'prod-conflict-banner';
-      banner.style.cssText = 'background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:rgba(238,238,244,0.85);line-height:1.6;display:flex;gap:10px;align-items:flex-start;';
-      banner.innerHTML = `<span style="font-size:18px;flex-shrink:0">🔨</span><div><strong style="color:#f59e0b;">Длинное производство: ${prodDays} рд.</strong> Запуск производства должен быть за <strong>${productionStart} раб. дней</strong> до события — это <strong>раньше</strong>, чем фаза Подготовки (стандартно начинается за 31 рд). Производство стартует параллельно с фазой <strong>${overshootPhase}</strong>. Это значит: концепция и базовое ТЗ должны быть утверждены ещё раньше — заложите ${overshoot} доп. рабочих дней на ранние согласования.</div>`;
       const cardsEl = document.getElementById('event-phase-cards');
       cardsEl.parentNode.insertBefore(banner, cardsEl);
     }
@@ -5277,6 +5330,7 @@ function saveProject() {
     projectOwner,
     currentEventType,
     eventDates: {},
+    projectStartDates: {},
     eventDurations: { ...eventDurations },
     eventProductionDays: { ...eventProductionDays },
     checked: { ...checked },
@@ -5288,6 +5342,9 @@ function saveProject() {
   // Serialize dates as ISO strings
   for (const [k, v] of Object.entries(eventDates)) {
     state.eventDates[k] = v ? v.toISOString() : null;
+  }
+  for (const [k, v] of Object.entries(projectStartDates)) {
+    state.projectStartDates[k] = v ? v.toISOString() : null;
   }
 
   // Inject state into the page. Encode as base64 so NO character in the
@@ -5416,6 +5473,10 @@ function restoreState(state) {
     }
     eventDurations = { ...(state.eventDurations || {}) };
     eventProductionDays = { ...(state.eventProductionDays || {}) };
+    projectStartDates = {};
+    for (const [k, v] of Object.entries(state.projectStartDates || {})) {
+      projectStartDates[k] = v ? new Date(v) : null;
+    }
     if (typeof invalidateSchedule === 'function') invalidateSchedule();
   });
 
@@ -5578,6 +5639,7 @@ window.addEventListener('DOMContentLoaded', () => {
       eventProductionDays: Object.assign({}, eventProductionDays),
       checked: Object.assign({}, checked),
       disabled: (typeof disabled !== 'undefined') ? Object.assign({}, disabled) : {},
+      projectStartDates: {},
       annualData: annualData,
       annualYear: annualYear
     };
@@ -5585,6 +5647,14 @@ window.addEventListener('DOMContentLoaded', () => {
       if (Object.prototype.hasOwnProperty.call(eventDates, k)) {
         var v = eventDates[k];
         state.eventDates[k] = v ? (v instanceof Date ? v.toISOString() : v) : null;
+      }
+    }
+    if (typeof projectStartDates !== 'undefined' && projectStartDates) {
+      for (var pk in projectStartDates) {
+        if (Object.prototype.hasOwnProperty.call(projectStartDates, pk)) {
+          var pv = projectStartDates[pk];
+          state.projectStartDates[pk] = pv ? (pv instanceof Date ? pv.toISOString() : pv) : null;
+        }
       }
     }
     return state;
