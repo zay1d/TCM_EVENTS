@@ -182,6 +182,17 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
 .ck4-crit-empty { color:var(--muted2); font-size:14px; }
 .ck4-dur   { width:60px; flex-shrink:0; font-size:12px; font-weight:600; color:var(--muted); text-align:center; }
 .ck4-row-critical { /* left border removed — critical indicator handled by red dot in Крит. column */ }
+/* ── Task on/off toggle (вкл/выкл пункта) ── */
+.ck4-toggle { width:38px; min-width:38px; height:22px; border-radius:11px; flex-shrink:0; margin-top:7px; position:relative; cursor:pointer; transition:background .18s; background:var(--border2); }
+.ck4-toggle.on { background:#10b981; }
+.ck4-toggle-knob { position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff; transition:left .18s; box-shadow:0 1px 2px rgba(0,0,0,0.3); }
+.ck4-toggle.on .ck4-toggle-knob { left:18px; }
+.ck4-toggle:hover { filter:brightness(1.1); }
+/* ── Disabled row (пункт исключён из расчётов) ── */
+.ck4-disabled { cursor:default; }
+.ck4-disabled .ck4-cell { opacity:0.4; }
+.ck4-disabled .ck4-check { opacity:0.3; background:var(--surface3); border-style:dashed; }
+.ck4-disabled .ck4-task-text { color:var(--muted2); }
 .ck4-doc-cell { width:160px; flex-shrink:0; font-size:11px; font-weight:600; cursor:pointer; border-color:rgba(201,169,110,0.15); }
 .ck4-doc-cell:hover { border-color:var(--gold); background:var(--gold-soft) !important; }
 .ck4-empty-doc { width:160px; flex-shrink:0; opacity:0.25; }
@@ -1845,6 +1856,17 @@ const RAPID_DATA = [
 let currentEventType = null;
 let currentPhaseIndex = 0;
 let checked = {};
+let disabled = {}; // { 'phaseId-index': true } — task switched OFF (not needed for this event)
+// Helper: is a given task active (i.e. NOT disabled)?
+function isTaskActive(phaseId, i) { return !disabled[phaseId + '-' + i]; }
+// Helper: count of ACTIVE tasks in a phase (denominator for progress)
+function activeTotal(phase) {
+  return phase.checks.reduce((s, _, i) => s + (isTaskActive(phase.id, i) ? 1 : 0), 0);
+}
+// Helper: count of ACTIVE + DONE tasks in a phase
+function activeDone(phase) {
+  return phase.checks.reduce((s, _, i) => s + ((isTaskActive(phase.id, i) && checked[phase.id + '-' + i]) ? 1 : 0), 0);
+}
 let currentModalTemplate = null;
 let eventDates = {}; // { 'special': Date, 'operational': Date } — start date
 let eventDurations = {}; // { 'special': N, 'operational': N } — days inclusive (event runs days 1..N)
@@ -2884,9 +2906,9 @@ function renderEventScreen(typeId) {
     </span>` : ''}
     ${compressed ? `<span class="phase-header-milestone" style="color:#ef4444;background:rgba(239,68,68,0.1);border-color:rgba(239,68,68,0.25);">⚡ Сжатый график · ${typeId==='special' ? countWorkdaysBetween(today,eventDate)+' раб. дн.' : daysUntil+' дн.'} до события</span>` : ''}`;
 
-  // Total progress
-  const total = et.phases.reduce((s,p) => s + p.checks.length, 0);
-  const done = et.phases.reduce((s,p) => s + p.checks.filter((_,i) => checked[p.id+'-'+i]).length, 0);
+  // Total progress (active tasks only)
+  const total = et.phases.reduce((s,p) => s + activeTotal(p), 0);
+  const done = et.phases.reduce((s,p) => s + activeDone(p), 0);
   const pct = total ? Math.round(done/total*100) : 0;
   document.getElementById('event-pct').textContent = pct + '%';
   document.getElementById('event-fill').style.width = pct + '%';
@@ -2976,8 +2998,8 @@ function renderEventScreen(typeId) {
 
   // Phase cards
   document.getElementById('event-phase-cards').innerHTML = et.phases.map((p,i) => {
-    const total2 = p.checks.length;
-    const done2 = p.checks.filter((_,ci) => checked[p.id+'-'+ci]).length;
+    const total2 = activeTotal(p);
+    const done2 = activeDone(p);
     const pct2 = total2 ? Math.round(done2/total2*100) : 0;
     const isDone = isPhaseDone(typeId, i);
     const range = phaseDateRangeEffective(typeId, p.id, p.timeline, eventDate);
@@ -3013,7 +3035,9 @@ function renderEventScreen(typeId) {
 function isPhaseDone(typeId, i) {
   const phase = EVENT_TYPES[typeId].phases[i];
   if (!phase || phase.checks.length === 0) return false;
-  return phase.checks.every((_,ci) => checked[phase.id+'-'+ci]);
+  const act = activeTotal(phase);
+  if (act === 0) return false; // all tasks disabled → not "done", just empty
+  return phase.checks.every((_,ci) => disabled[phase.id+'-'+ci] || checked[phase.id+'-'+ci]);
 }
 
 // ─────────────── PHASE ───────────────
@@ -3327,6 +3351,7 @@ function renderChecklist(phase) {
   const rows = phase.checks.map((c, i) => {
     const key = phase.id+'-'+i;
     const isChecked = checked[key];
+    const isActive = !disabled[key];
     const role = ROLE_META[c.who] || ROLE_META.po;
     let deadlineDisplay = c.deadline;
     let wasCompressed = false;
@@ -3366,12 +3391,13 @@ function renderChecklist(phase) {
         ? `Базовая длительность ${baseDays} д. — пересчитано из-за ${effDays > baseDays ? 'запаса' : 'нехватки'} времени до события`
         : '';
       const durCell = `<div class="ck4-cell ck4-dur" title="${durTitle}">${effDays} д${durChanged ? '<span style="font-size:10px;opacity:0.6;margin-left:2px">*</span>' : ''}</div>`;
-      return `<div class="ck4-row ${isChecked?'ck4-done':''} ${c.critical?'ck4-row-critical':''}" data-task-id="${c.taskId||''}" onclick="toggleCheck('${key}','${phase.id}')">
+      return `<div class="ck4-row ${isChecked?'ck4-done':''} ${c.critical?'ck4-row-critical':''} ${!isActive?'ck4-disabled':''}" data-task-id="${c.taskId||''}" onclick="${isActive?`toggleCheck('${key}','${phase.id}')`:''}">
+        <div class="ck4-toggle ${isActive?'on':'off'}" onclick="event.stopPropagation();toggleTaskActive('${key}','${phase.id}')" title="${isActive?'Пункт учитывается. Нажмите, чтобы исключить':'Пункт исключён из расчётов. Нажмите, чтобы вернуть'}"><span class="ck4-toggle-knob"></span></div>
         <div class="ck4-check ${isChecked?'ck4-checked':''}">
           ${isChecked?`<svg width="12" height="12" viewBox="0 0 12 12"><polyline points="2,6 5,9 10,3" stroke="white" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`:''}
         </div>
         <div class="ck4-cell ck4-task">
-          <div class="ck4-task-text ${isChecked?'ck4-strikethrough':''}">${c.isProduction?'<span title="Производственный трек" style="color:#D97706;margin-right:5px">🔨</span>':''}${c.text}</div>
+          <div class="ck4-task-text ${isChecked||!isActive?'ck4-strikethrough':''}">${c.isProduction?'<span title="Производственный трек" style="color:#D97706;margin-right:5px">🔨</span>':''}${c.text}</div>
           ${c.note?`<div class="ck4-note">ℹ️ ${c.note}</div>`:''}
         </div>
         ${critCell}
@@ -3389,12 +3415,13 @@ function renderChecklist(phase) {
     const phaseCellText = subN ? `Ф.${subN} · ${SUBPHASE_NAMES[subN]}` : phase.title;
     const phaseCell = `<div class="ck4-cell ck4-phase" style="color:var(--cyan);background:var(--cyan-soft);">${phaseCellText}</div>`;
 
-    return `<div class="ck4-row ${isChecked?'ck4-done':''}" onclick="toggleCheck('${key}','${phase.id}')">
+    return `<div class="ck4-row ${isChecked?'ck4-done':''} ${!isActive?'ck4-disabled':''}" onclick="${isActive?`toggleCheck('${key}','${phase.id}')`:''}">
+      <div class="ck4-toggle ${isActive?'on':'off'}" onclick="event.stopPropagation();toggleTaskActive('${key}','${phase.id}')" title="${isActive?'Пункт учитывается. Нажмите, чтобы исключить':'Пункт исключён из расчётов. Нажмите, чтобы вернуть'}"><span class="ck4-toggle-knob"></span></div>
       <div class="ck4-check ${isChecked?'ck4-checked':''}">
         ${isChecked?`<svg width="12" height="12" viewBox="0 0 12 12"><polyline points="2,6 5,9 10,3" stroke="white" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`:''}
       </div>
       <div class="ck4-cell ck4-task">
-        <div class="ck4-task-text ${isChecked?'ck4-strikethrough':''}">${c.isProduction?'<span title="Производственный трек" style="color:#D97706;margin-right:5px">🔨</span>':''}${c.text}</div>
+        <div class="ck4-task-text ${isChecked||!isActive?'ck4-strikethrough':''}">${c.isProduction?'<span title="Производственный трек" style="color:#D97706;margin-right:5px">🔨</span>':''}${c.text}</div>
         ${c.note?`<div class="ck4-note">ℹ️ ${c.note}</div>`:''}
       </div>
       <div class="ck4-cell ck4-date" style="color:${dlCol};background:${dlBg};">
@@ -3412,6 +3439,7 @@ function renderChecklist(phase) {
 }
 
 function toggleCheck(key, phaseId) {
+  if (disabled[key]) return; // can't complete a disabled task
   checked[key] = !checked[key];
   const et = EVENT_TYPES[currentEventType];
   const phase = et.phases.find(p => p.id === phaseId);
@@ -3423,9 +3451,22 @@ function toggleCheck(key, phaseId) {
   }
 }
 
+function toggleTaskActive(key, phaseId) {
+  disabled[key] = !disabled[key];
+  // When disabling a task, also clear its done-state so it can't linger as "completed"
+  if (disabled[key]) checked[key] = false;
+  const et = EVENT_TYPES[currentEventType];
+  const phase = et.phases.find(p => p.id === phaseId);
+  renderChecklist(phase);
+  updatePhaseProgress(phase);
+  if (document.getElementById('dashboard-screen').classList.contains('active')) {
+    renderDashboard();
+  }
+}
+
 function updatePhaseProgress(phase) {
-  const total = phase.checks.length;
-  const done = phase.checks.filter((_,i) => checked[phase.id+'-'+i]).length;
+  const total = activeTotal(phase);
+  const done = activeDone(phase);
   const pct = total ? Math.round(done/total*100) : 0;
   document.getElementById('phase-pct').textContent = pct + '%';
   document.getElementById('phase-fill').style.width = pct + '%';
@@ -3547,14 +3588,15 @@ function ganttDraw(typeId) {
     const isPast = !isDone && r.later && today > r.later;
     const barColor = isDone ? '#10b981' : isPast ? '#ef4444' : isActive ? color : color+'88';
     const l = pct(r.earlier); const w = Math.max(0.5, pct(r.later) - l);
-    const done2 = p.checks.filter((_,ci) => checked[p.id+'-'+ci]).length;
-    const pct2 = p.checks.length > 0 ? Math.round(done2/p.checks.length*100) : 0;
+    const done2 = activeDone(p);
+    const pTot = activeTotal(p);
+    const pct2 = pTot > 0 ? Math.round(done2/pTot*100) : 0;
     // Green progress overlay width = pct2% of the bar width
     const greenW = isDone ? w : Math.round(w * pct2 / 100);
     return `<div style="display:flex;align-items:center;gap:0;margin-bottom:6px;cursor:pointer" onclick="selectPhase(${i}); _doSelectEventType('${typeId}'); setTimeout(()=>selectPhase(${i}),60)">
       <div style="width:150px;min-width:150px;padding-right:10px;text-align:right">
         <div style="font-size:11px;font-weight:600;color:${isDone?'#10b981':isActive?color:'var(--text)'};line-height:1.3">${p.num}. ${p.title}</div>
-        <div style="font-size:10px;color:var(--muted)">${done2}/${p.checks.length} · ${pct2}%</div>
+        <div style="font-size:10px;color:var(--muted)">${done2}/${pTot} · ${pct2}%</div>
       </div>
       <div style="flex:1;position:relative;height:30px;background:var(--surface3);border-radius:6px;overflow:hidden">
         <!-- Phase bar (plan color) -->
@@ -4921,6 +4963,8 @@ function buildPhasesChart(phaseStats, currentPhaseIdx, eventDate, typeId) {
 // Helper used by buildPhasesChart - how far through each phase should we be today
 function phasePlanPct(p, eventDate, typeId) {
   if (!eventDate || !p.checks || p.checks.length === 0) return null;
+  const actTot = activeTotal(p);
+  if (actTot === 0) return null;
   const today2 = new Date(); today2.setHours(0,0,0,0);
   const dU = Math.round((eventDate - today2) / 86400000);
 
@@ -4937,13 +4981,14 @@ function phasePlanPct(p, eventDate, typeId) {
     }
   }
 
-  // Count tasks due today or earlier
+  // Count ACTIVE tasks due today or earlier
   let dueTodayOrBefore = 0;
-  p.checks.forEach(function(c) {
+  p.checks.forEach(function(c, ci) {
+    if (disabled[p.id+'-'+ci]) return; // skip disabled
     const eff = getEffectiveDeadline(typeId, p.id, c.deadline, eventDate, c);
     if (eff.daysUntil !== undefined && eff.daysUntil <= 0) dueTodayOrBefore++;
   });
-  return Math.round(dueTodayOrBefore / p.checks.length * 100);
+  return Math.round(dueTodayOrBefore / actTot * 100);
 }
 
 function showDashboard() {
@@ -4973,8 +5018,8 @@ function renderDashboard() {
 
   if (et) {
     et.phases.forEach((p, i) => {
-      const total = p.checks.length;
-      const done = p.checks.filter((_,ci) => checked[p.id+'-'+ci]).length;
+      const total = activeTotal(p);
+      const done = activeDone(p);
       const pct = total ? Math.round(done/total*100) : 0;
       const isDone = isPhaseDone(typeId, i);
       totalTasks += total;
@@ -5001,7 +5046,8 @@ function renderDashboard() {
         if (r.from < 0 && daysUntil > -r.from) return; // not started yet
         if (r.from >= 0 && daysUntil > 0) return; // post-event phase, event hasn't happened
       }
-      p.checks.forEach(function(c) {
+      p.checks.forEach(function(c, ci) {
+        if (disabled[p.id+'-'+ci]) return; // skip disabled
         const eff = getEffectiveDeadline(typeId, p.id, c.deadline, eventDate, c);
         if (eff.daysUntil !== undefined && eff.daysUntil <= 0) totalDue++;
       });
@@ -5021,6 +5067,7 @@ function renderDashboard() {
   if (et && eventDate) {
     et.phases.forEach((p,pi) => {
       p.checks.forEach((c,ci) => {
+        if (disabled[p.id+'-'+ci]) return; // skip disabled
         if (checked[p.id+'-'+ci]) return;
         const eff = getEffectiveDeadline(typeId, p.id, c.deadline, eventDate, c);
         if (eff.text && eff.text.includes('просрочено')) {
@@ -5035,6 +5082,7 @@ function renderDashboard() {
   if (et && eventDate) {
     et.phases.forEach((p,pi) => {
       p.checks.forEach((c,ci) => {
+        if (disabled[p.id+'-'+ci]) return; // skip disabled
         if (checked[p.id+'-'+ci]) return;
         const eff = getEffectiveDeadline(typeId, p.id, c.deadline, eventDate, c);
         if (eff.text && (eff.text.includes('через') || eff.text.includes('сегодня'))) {
@@ -5232,6 +5280,7 @@ function saveProject() {
     eventDurations: { ...eventDurations },
     eventProductionDays: { ...eventProductionDays },
     checked: { ...checked },
+    disabled: { ...disabled },
     archiveFiles: archiveFiles,
     annualData: annualData,
     annualYear: annualYear,
@@ -5372,6 +5421,7 @@ function restoreState(state) {
 
   // Restore checked state
   _safe('checked', () => { checked = { ...(state.checked || {}) }; });
+  _safe('disabled', () => { disabled = { ...(state.disabled || {}) }; });
 
   // Restore archive files
   _safe('archive', () => {
@@ -5452,7 +5502,6 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 });
 </script>
-
 <script>
 /* ============================================================================
    TCM CLOUD LAYER  ·  multi-event · server persistence · documents · roles
@@ -5528,6 +5577,7 @@ window.addEventListener('DOMContentLoaded', () => {
       eventDurations: Object.assign({}, eventDurations),
       eventProductionDays: Object.assign({}, eventProductionDays),
       checked: Object.assign({}, checked),
+      disabled: (typeof disabled !== 'undefined') ? Object.assign({}, disabled) : {},
       annualData: annualData,
       annualYear: annualYear
     };
