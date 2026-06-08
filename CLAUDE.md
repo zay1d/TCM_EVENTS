@@ -52,9 +52,10 @@ module returns early and the app behaves exactly like the original.
 
 Each event is one row in `events` with a `state` JSONB blob that mirrors the
 shape `saveProject()` produces: `projectName, projectOwner, currentEventType,
-eventDates, eventDurations, eventProductionDays, checked, disabled, annualData,
-annualYear`. The cloud `collectState()` (in the cloud module) must stay in sync
-with this shape — if a new piece of state is added to the core, add it there too.
+eventDates, eventDurations, eventProductionDays, projectStartDates, checked,
+disabled, annualData, annualYear`. The cloud `collectState()` (in the cloud
+module) must stay in sync with this shape — if a new piece of state is added to
+the core, add it there too (Date fields are serialized to ISO strings).
 Documents are **not** in `state`; they live in R2 + the `documents` table.
 
 ## Conventions
