@@ -5744,7 +5744,9 @@ window.addEventListener('DOMContentLoaded', () => {
     wrap.id = 'cloud-controls';
     wrap.style.cssText = 'display:flex;gap:8px;align-items:center;';
     wrap.innerHTML =
-      '<button id="cloud-save-btn" class="cloud-btn cloud-gold" onclick="TcmCloud.saveNow(true)">☁ Сохранить</button>'
+      '<button id="cloud-list-btn" class="cloud-btn" onclick="TcmCloud.showList()">📋 Ивенты</button>'
+      + '<button id="cloud-new-hdr-btn" class="cloud-btn cloud-gold" onclick="TcmCloud.createEvent()">➕ Создать новый</button>'
+      + '<button id="cloud-save-btn" class="cloud-btn cloud-gold" onclick="TcmCloud.saveNow(true)">☁ Сохранить</button>'
       + '<button id="cloud-auth-btn" class="cloud-btn" onclick="TcmCloud.auth()">Войти</button>';
     hr.insertBefore(wrap, hr.firstChild);
 
@@ -5764,6 +5766,8 @@ window.addEventListener('DOMContentLoaded', () => {
     if (authBtn) authBtn.textContent = owner ? 'Выйти' : 'Войти';
     var saveBtn = document.getElementById('cloud-save-btn');
     if (saveBtn) saveBtn.style.display = owner ? '' : 'none';
+    var newBtn = document.getElementById('cloud-new-hdr-btn');
+    if (newBtn) newBtn.style.display = owner ? '' : 'none';
     var banner = document.getElementById('cloud-viewer-banner');
     if (banner) banner.style.display = owner ? 'none' : 'block';
   }
@@ -5780,6 +5784,7 @@ window.addEventListener('DOMContentLoaded', () => {
       + '<div style="display:flex;gap:8px;">'
       + '<button id="cloud-new-btn" class="cloud-btn cloud-gold" onclick="TcmCloud.createEvent()">+ Новый ивент</button>'
       + '<button id="cloud-ov-auth" class="cloud-btn" onclick="TcmCloud.auth()">Войти</button>'
+      + '<button id="cloud-ov-close" class="cloud-btn" onclick="TcmCloud.closeList()" title="Закрыть">✕</button>'
       + '</div></div>'
       + '<div style="font-size:12px;color:var(--muted);margin-bottom:20px;">Выберите мероприятие для просмотра. Редактировать может только владелец.</div>'
       + '<div id="cloud-list-body"></div>'
@@ -5792,6 +5797,7 @@ window.addEventListener('DOMContentLoaded', () => {
     var owner = Api.isOwner();
     var nb = document.getElementById('cloud-new-btn'); if (nb) nb.style.display = owner ? '' : 'none';
     var ob = document.getElementById('cloud-ov-auth'); if (ob) ob.textContent = owner ? 'Выйти' : 'Войти';
+    var cb = document.getElementById('cloud-ov-close'); if (cb) cb.style.display = currentEventId ? '' : 'none';
     document.getElementById('cloud-overlay').style.display = 'flex';
     var body = document.getElementById('cloud-list-body');
     body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted);">Загрузка…</div>';
@@ -5822,8 +5828,14 @@ window.addEventListener('DOMContentLoaded', () => {
     currentEventId = id;
     applyState(ev.state || {});
     lastSavedJson = JSON.stringify(collectState());
+    var ov = document.getElementById('cloud-overlay'); if (ov) ov.style.display = 'none';
     var sm = document.getElementById('startup-modal'); if (sm) sm.style.display = 'none';
     updateRoleUI();
+  }
+
+  // Close the events-list overlay (only useful once an event is already open).
+  function closeList() {
+    var ov = document.getElementById('cloud-overlay'); if (ov) ov.style.display = 'none';
   }
 
   // Create a new event using the ORIGINAL "Новое мероприятие" startup modal
@@ -5884,7 +5896,8 @@ window.addEventListener('DOMContentLoaded', () => {
     updateRoleUI();
     var arch = document.getElementById('archive-screen');
     if (arch && arch.classList.contains('active')) renderDocs();    // refresh document controls
-    if (!currentEventId) bootWorkspace();                           // re-decide entry now the role changed
+    var ov = document.getElementById('cloud-overlay');
+    if (ov && ov.style.display !== 'none') showList();              // refresh list (new/delete buttons, role)
   }
 
   // ── In-page login modal (replaces the browser prompt) ───────────────────────
@@ -5962,31 +5975,8 @@ window.addEventListener('DOMContentLoaded', () => {
   window.TcmCloud = {
     showList: showList, openEvent: openEvent, createEvent: createEvent,
     deleteEvent: deleteEvent, saveNow: saveNow, auth: auth,
-    submitLogin: submitLogin, closeLogin: closeLogin
+    submitLogin: submitLogin, closeLogin: closeLogin, closeList: closeList
   };
-
-  // Single shared workspace: load the existing event, or show the ORIGINAL
-  // startup modal to create it (owner). This makes the first screen identical
-  // to the standalone app — the only difference is the added roles.
-  async function bootWorkspace() {
-    var sm = document.getElementById('startup-modal');
-    if (sm) sm.style.display = 'none';            // avoid flashing it while we check the server
-    var events;
-    try { events = await Api.listEvents(); }
-    catch (e) {
-      toast('Сервер недоступен: ' + e.message, true);
-      if (sm) sm.style.display = 'flex';
-      return;
-    }
-    if (events && events.length) {
-      await openEvent(events[0].id);              // load the shared workspace
-    } else if (sm) {
-      creatingNewEvent = Api.isOwner();           // owner's "Начать работу" creates it on the server
-      sm.style.display = 'flex';
-      var nameI = document.getElementById('startup-name-input');
-      if (nameI) setTimeout(function () { nameI.focus(); }, 100);
-    }
-  }
 
   // ── Boot (runs after the core DOMContentLoaded handler) ─────────────────────
   window.addEventListener('DOMContentLoaded', function () {
@@ -5996,7 +5986,7 @@ window.addEventListener('DOMContentLoaded', () => {
     step('header', buildHeaderControls);
     step('guards', wrapOwnerOnly);
     step('role', updateRoleUI);
-    step('workspace', bootWorkspace);
+    step('list', showList);   // entry point: the events list (so re-entry never sticks to one event)
   });
 })();
 </script>
