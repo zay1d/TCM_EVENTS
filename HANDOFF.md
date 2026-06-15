@@ -8,21 +8,26 @@ architecture; this file is the live status and "how to operate it" notes.
 | Piece | URL / location |
 |---|---|
 | Frontend (GitHub Pages) | https://zay1d.github.io/TCM_EVENTS/ |
-| API (Contabo VPS) | https://tcm.167-86-125-229.sslip.io |
+| API (corporate VM) | https://tcm-events.tail226d37.ts.net (Tailscale Funnel → 127.0.0.1:8080) |
 | API health check | `GET /api/health` → `{"ok":true}` |
+| Corporate VM (SSH) | `ssh -i <key> -p 54323 admintg@90.156.197.14` (Ubuntu 22.04) |
+| Old backend (fallback) | Contabo `https://tcm.167-86-125-229.sslip.io` — keep until verified, then decommission |
 | Repo | `zay1d/TCM_EVENTS`, default & deploy branch: `claude/dazzling-knuth-JnBad` |
-| Document storage | Cloudflare R2 bucket `tcm-events-documents` |
+| Document storage | Cloudflare R2 — bucket `tcm-events-documents` (⚠ R2 keys not yet in `.env`; docs feature off until added) |
 
 ## Hosting / infra choices (and why)
 
 - **Frontend on GitHub Pages** — free, HTTPS, public repo. Deploys via
   `.github/workflows/deploy-pages.yml` (publishes only `index.html`). Source in
   repo Settings → Pages is set to **GitHub Actions**.
-- **Backend on Contabo VPS** — Node/Express + PostgreSQL, nginx + Let's Encrypt.
-  Express binds `127.0.0.1` only; nginx terminates TLS and proxies.
-- **HTTPS for the API without a bought domain** — uses `sslip.io` (the host
-  `tcm.167-86-125-229.sslip.io` resolves to the VPS IP `167.86.125.229`).
-  Fallback if Let's Encrypt rate-limits sslip.io: a free DuckDNS subdomain.
+- **Backend on the corporate VM** (`90.156.197.14`, Ubuntu 22.04, user `admintg`)
+  — Node/Express + PostgreSQL. Express binds `127.0.0.1:8080`; runs as systemd
+  unit `tcm-events`. Migrated here from Contabo on 2026-06-15.
+- **HTTPS without a white IP / free ports** — the VM has no dedicated public IP
+  and 80/443 are taken, so the API is exposed via **Tailscale Funnel** (outbound,
+  auto-TLS): `https://tcm-events.tail226d37.ts.net` → `127.0.0.1:8080`.
+  Funnel runs in the background (`tailscale funnel --bg 8080`); `tailscaled` is a
+  systemd service, so it survives reboot.
 - **Documents on Cloudflare R2** — browser uploads direct to R2 (presigned),
   so the VPS isn't loaded with file traffic; free egress.
 

@@ -14,8 +14,8 @@ shared by everyone, with two roles (owner edits, everyone else views).
 ```
 Browser ──HTTPS──► GitHub Pages (frontend: index.html)
    │
-   ├── REST API ──► Contabo VPS: nginx (TLS) → Node/Express (127.0.0.1) → PostgreSQL
-   │                 https://tcm.167-86-125-229.sslip.io
+   ├── REST API ──► Corporate VM: Tailscale Funnel → Node/Express (127.0.0.1:8080) → PostgreSQL
+   │                 https://tcm-events.tail226d37.ts.net
    │
    └── presigned PUT/GET ──► Cloudflare R2 (document storage)
 ```
