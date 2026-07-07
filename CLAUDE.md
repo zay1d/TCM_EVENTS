@@ -23,8 +23,10 @@ Browser ──HTTPS──► GitHub Pages (frontend: index.html)
 - **Frontend** — `index.html`, a single self-contained file (vanilla HTML/CSS/JS).
   Deployed to GitHub Pages by `.github/workflows/deploy-pages.yml` on every push
   to the default branch. Site: https://zay1d.github.io/TCM_EVENTS/
-- **Backend** — `server/` (Node + Express + PostgreSQL), runs on a Contabo VPS
-  behind nginx with Let's Encrypt TLS, listening on loopback only.
+- **Backend** — `server/` (Node + Express + PostgreSQL), runs on the corporate VM
+  (`admintg@90.156.197.14`, systemd unit `tcm-events`), listening on loopback
+  `127.0.0.1:8080`. It has no public IP / free ports, so it is exposed over HTTPS
+  via **Tailscale Funnel** (outbound, auto-TLS) at `https://tcm-events.tail226d37.ts.net`.
 - **Storage** — uploaded documents go straight from the browser to Cloudflare R2
   via presigned URLs; only metadata is stored in Postgres.
 
@@ -105,8 +107,11 @@ sudo systemctl restart tcm-events
 
 ## Notes for working here
 
-- This repo is operated by two Claudes: one (this one) edits the frontend/repo;
-  another has SSH access to the VPS for backend/deploy. Backend `.env`, certbot,
-  systemd and DB live on the VPS and are managed there.
+- Backend ops run over SSH on the corporate VM (`~/.ssh/tcm_admintg_ed25519`,
+  `admintg@90.156.197.14:54323`). Backend `.env`, systemd unit `tcm-events`,
+  PostgreSQL and the Tailscale Funnel live on the VM and are managed there
+  (no nginx / no certbot — Tailscale handles TLS).
 - The default branch is also the deploy branch; pushing to it ships the site.
-- See `HANDOFF.md` for current status and operational details.
+  Deploy a backend change with `sudo git -C /opt/tcm_events pull --ff-only &&
+  sudo systemctl restart tcm-events`.
+- See `HANDOFF.md` for current status, operations and incident history.
