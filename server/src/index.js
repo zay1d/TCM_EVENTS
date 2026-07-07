@@ -4,6 +4,11 @@ import cors from 'cors';
 import { events } from './routes/events.js';
 import { documents } from './routes/documents.js';
 import { verifyOwnerPassword, issueOwnerToken } from './auth.js';
+import { ah } from './async.js';
+
+// Safety net: a stray rejected promise (e.g. a DB error on a path we forgot to
+// wrap) must never take the whole process down — that caused a 502 crash-loop.
+process.on('unhandledRejection', (err) => console.error('unhandledRejection:', err));
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -17,11 +22,11 @@ app.use(cors({ origin: origins.length ? origins : true }));
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 // Owner login — exchange the password for a JWT.
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', ah(async (req, res) => {
   const ok = await verifyOwnerPassword(req.body?.password);
   if (!ok) return res.status(401).json({ error: 'Неверный пароль' });
   res.json({ token: issueOwnerToken() });
-});
+}));
 
 app.use('/api/events', events);
 app.use('/api', documents);
